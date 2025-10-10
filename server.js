@@ -1,10 +1,15 @@
 import express from 'express';
 import cors from 'cors';
-import makeWASocket, { DisconnectReason, useMultiFileAuthState } from '@whiskeysockets/baileys';
+// --- THE FIX IS HERE ---
+// We now import the default export from the library correctly.
+import baileys, { DisconnectReason, useMultiFileAuthState } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import fs from 'fs';
 import QRCode from 'qrcode';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+
+// The main function is now accessed via the 'baileys' default export
+const makeWASocket = baileys.default;
 
 // --- Server and AI Setup ---
 const app = express();
@@ -17,12 +22,9 @@ const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-preview-05-20"
 
 const activeSockets = new Map();
 
-// --- CRITICAL NOTE ---
-// This system requires a persistent filesystem to store session files.
-// Use a service with a persistent disk (paid Render, Railway, etc.)
 if (!fs.existsSync('./sessions')) fs.mkdirSync('./sessions');
 
-// --- Main Connection Logic (Using the Correct Auth Function) ---
+// --- Main Connection Logic ---
 async function initializeWhatsAppConnection(sessionCode) {
     if (activeSockets.has(sessionCode)) return { sock: activeSockets.get(sessionCode) };
 
@@ -32,7 +34,7 @@ async function initializeWhatsAppConnection(sessionCode) {
         logger: pino({ level: 'silent' }),
         auth: state,
         printQRInTerminal: true,
-        browser: ["Chrome (Linux)", "CampaignTool", "2.0"],
+        browser: ["Chrome (Linux)", "CampaignTool", "2.1"],
     });
 
     sock.ev.on('creds.update', saveCreds);
