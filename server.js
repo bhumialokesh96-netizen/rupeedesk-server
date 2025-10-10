@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import makeWASocket, { DisconnectReason, useSingleFileAuthState } from '@whiskeysockets/baileys';
+import makeWASocket, { DisconnectReason, useMultiFileAuthState } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import fs from 'fs';
 import QRCode from 'qrcode';
@@ -17,31 +17,37 @@ const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-preview-05-20"
 
 const activeSockets = new Map();
 
+// --- CRITICAL NOTE ---
+// This system requires a persistent filesystem to store session files.
+// Use a service with a persistent disk (paid Render, Railway, etc.)
 if (!fs.existsSync('./sessions')) fs.mkdirSync('./sessions');
 
-// --- Main Connection Logic ---
+// --- Main Connection Logic (Using the Correct Auth Function) ---
 async function initializeWhatsAppConnection(sessionCode) {
     if (activeSockets.has(sessionCode)) return { sock: activeSockets.get(sessionCode) };
 
-    const authFile = `sessions/auth_${sessionCode}.json`;
-    const { state, saveState } = useSingleFileAuthState(authFile);
+    const { state, saveCreds } = await useMultiFileAuthState(`sessions/auth_info_${sessionCode}`);
     
     const sock = makeWASocket({
         logger: pino({ level: 'silent' }),
         auth: state,
         printQRInTerminal: true,
-        browser: ["Chrome (Linux)", "CampaignTool", "1.0"],
+        browser: ["Chrome (Linux)", "CampaignTool", "2.0"],
     });
 
-    sock.ev.on('creds.update', saveState);
+    sock.ev.on('creds.update', saveCreds);
+
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect } = update;
         if (connection === 'open') {
+            console.log(`[${sessionCode}] Connection opened successfully.`);
             activeSockets.set(sessionCode, sock);
         } else if (connection === 'close') {
             activeSockets.delete(sessionCode);
+            console.log(`[${sessionCode}] Connection closed.`);
             if (lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut) {
-                if (fs.existsSync(authFile)) fs.unlinkSync(authFile);
+                console.log(`[${sessionCode}] Logged out. Deleting session folder.`);
+                fs.rmSync(`sessions/auth_info_${sessionCode}`, { recursive: true, force: true });
             }
         }
     });
@@ -56,8 +62,8 @@ app.post('/get-session-status', async (req, res) => {
     const { sessionCode } = req.body;
     if (!sessionCode) return res.status(400).json({ error: 'Session code required.' });
 
-    const authFile = `sessions/auth_${sessionCode}.json`;
-    if (fs.existsSync(authFile)) {
+    const sessionDir = `sessions/auth_info_${sessionCode}`;
+    if (fs.existsSync(sessionDir)) {
         await initializeWhatsAppConnection(sessionCode);
         return res.status(200).json({ status: 'connected' });
     }
@@ -65,13 +71,16 @@ app.post('/get-session-status', async (req, res) => {
     const { sock } = await initializeWhatsAppConnection(sessionCode);
     sock.ev.once('connection.update', async ({ qr }) => {
         if (qr) {
-            const qrCodeUrl = await QRCode.toDataURL(qr);
-            res.status(200).json({ status: 'qr_needed', qrCode: qrCodeUrl });
+            try {
+                const qrCodeUrl = await QRCode.toDataURL(qr);
+                res.status(200).json({ status: 'qr_needed', qrCode: qrCodeUrl });
+            } catch {
+                res.status(500).json({ error: 'Failed to generate QR code.' });
+            }
         }
     });
 });
 
-// --- AI Endpoints ---
 app.post('/generate-campaign-message', async (req, res) => {
     const { goal } = req.body;
     if (!goal) return res.status(400).json({ error: 'Goal is required.' });
@@ -88,7 +97,6 @@ app.post('/generate-campaign-message', async (req, res) => {
     }
 });
 
-// --- Campaign Endpoint ---
 app.post('/start-campaign', (req, res) => {
     const { sessionCode, contacts, message } = req.body;
     const sock = activeSockets.get(sessionCode);
@@ -99,7 +107,6 @@ app.post('/start-campaign', (req, res) => {
 
     res.status(200).json({ success: true, message: `Campaign started for ${contacts.length} contacts.` });
 
-    // Send messages asynchronously with a safe delay
     let count = 0;
     const interval = setInterval(async () => {
         if (count >= contacts.length) {
@@ -120,7 +127,7 @@ app.post('/start-campaign', (req, res) => {
         }
         
         count++;
-    }, 8000); // 8-second delay between messages for safety
+    }, 8000);
 });
 
 
