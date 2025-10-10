@@ -1,7 +1,7 @@
 {
-  "name": "rupeedesk-whatsapp-campaigner",
-  "version": "5.1.0",
-  "description": "WhatsApp Campaign Manager with AI",
+  "name": "rupeedesk-multi-panel-server",
+  "version": "6.0.0",
+  "description": "WhatsApp Server for User/Admin Panels",
   "main": "server.js",
   "type": "module",
   "scripts": {
@@ -9,8 +9,7 @@
   },
   "keywords": [
     "whatsapp",
-    "gemini",
-    "campaign"
+    "admin-panel"
   ],
   "author": "",
   "license": "ISC",
