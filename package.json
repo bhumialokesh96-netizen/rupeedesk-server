@@ -1,6 +1,6 @@
 {
   "name": "rupeedesk-whatsapp-campaigner",
-  "version": "5.0.0",
+  "version": "5.1.0",
   "description": "WhatsApp Campaign Manager with AI",
   "main": "server.js",
   "type": "module",
@@ -16,7 +16,7 @@
   "license": "ISC",
   "dependencies": {
     "@google/generative-ai": "^0.11.3",
-    "@whiskeysockets/baileys": "^6.7.2",
+    "@whiskeysockets/baileys": "6.7.2",
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "pino": "^9.1.0",
