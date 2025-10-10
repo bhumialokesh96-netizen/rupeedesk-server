@@ -1,7 +1,7 @@
 {
   "name": "rupeedesk-server",
-  "version": "1.0.0",
-  "description": "WhatsApp Backend Server",
+  "version": "2.0.0",
+  "description": "WhatsApp Backend Server with QR and Pairing Code Support",
   "main": "server.js",
   "type": "module",
   "scripts": {
@@ -14,7 +14,7 @@
     "@whiskeysockets/baileys": "^6.7.2",
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "libphonenumber-js": "^1.10.59"
+    "pino": "^9.1.0",
+    "qrcode": "^1.5.3"
   }
 }
-
