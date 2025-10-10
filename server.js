@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import makeWASocket, { DisconnectReason, useMultiFileAuthState } from '@whiskeysockets/baileys';
 import pino from 'pino';
+import fs from 'fs';
 
 // --- Basic Server Setup ---
 const app = express();
@@ -14,7 +15,13 @@ const userConnectionStatus = new Map();
 
 // --- Main WhatsApp Connection Logic ---
 async function initializeWhatsAppConnection(userId) {
-    const { state, saveCreds } = await useMultiFileAuthState(`auth_info_${userId}`);
+    // Ensure the auth directory exists
+    const authDir = `auth_info_${userId}`;
+    if (!fs.existsSync(authDir)) {
+        fs.mkdirSync(authDir);
+    }
+
+    const { state, saveCreds } = await useMultiFileAuthState(authDir);
     
     const sock = makeWASocket({
         logger: pino({ level: 'silent' }),
@@ -70,7 +77,7 @@ app.post('/request-pairing-code', async (req, res) => {
     }
 });
 
-// NEW Endpoint for the app to check the binding status
+// Endpoint for the app to check the binding status
 app.get('/check-status/:userId', (req, res) => {
     const { userId } = req.params;
     const status = userConnectionStatus.get(userId) || 'not_found';
