@@ -1,162 +1,127 @@
 import express from 'express';
 import cors from 'cors';
-import makeWASocket, { DisconnectReason, useMultiFileAuthState } from '@whiskeysockets/baileys';
+import makeWASocket, { DisconnectReason, useSingleFileAuthState } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import fs from 'fs';
 import QRCode from 'qrcode';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// --- Basic Server Setup ---
+// --- Server and AI Setup ---
 const app = express();
 const port = process.env.PORT || 3000;
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
-// This map stores all session data for each user (status, sock, qr, etc.)
-const sessionData = new Map();
+const genAI = new GoogleGenerativeAI("");
+const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-preview-05-20" });
 
-// --- Main WhatsApp Connection Logic ---
-async function initializeWhatsAppConnection(userId, isPairingCode = false, phoneNumber = null) {
-    // Clean up any previous connection attempts for this user to avoid conflicts
-    if (sessionData.has(userId) && sessionData.get(userId).sock) {
-        console.log(`[${userId}] Closing existing socket before creating a new one.`);
-        try {
-            // This will trigger the 'connection.close' event for the old socket
-            await sessionData.get(userId).sock.logout();
-        } catch (error) {
-            console.log(`[${userId}] Old socket already closed or failed to logout: ${error.message}`);
-        }
-    }
+const activeSockets = new Map();
 
-    // --- CRITICAL NOTE FOR RENDER USERS ---
-    // The 'auth_info' folder is temporary on Render's free plan.
-    // It will be DELETED when the server sleeps, logging you out.
-    // For a permanent solution, use a server with persistent storage.
-    const authDir = `auth_info_${userId}`;
-    const { state, saveCreds } = await useMultiFileAuthState(authDir);
+if (!fs.existsSync('./sessions')) fs.mkdirSync('./sessions');
 
+// --- Main Connection Logic ---
+async function initializeWhatsAppConnection(sessionCode) {
+    if (activeSockets.has(sessionCode)) return { sock: activeSockets.get(sessionCode) };
+
+    const authFile = `sessions/auth_${sessionCode}.json`;
+    const { state, saveState } = useSingleFileAuthState(authFile);
+    
     const sock = makeWASocket({
         logger: pino({ level: 'silent' }),
         auth: state,
-        printQRInTerminal: !isPairingCode,
-        browser: ["Chrome (Linux)", "", ""], // Helps identify the session
+        printQRInTerminal: true,
+        browser: ["Chrome (Linux)", "CampaignTool", "1.0"],
     });
 
-    // Store the new socket and initial status
-    sessionData.set(userId, { sock, status: 'initializing', qr: null, code: null });
-
-    // If using pairing code, request it after a brief delay for the socket to init
-    if (isPairingCode && phoneNumber) {
-        setTimeout(async () => {
-            try {
-                if (sock.ws.isOpen) {
-                    const code = await sock.requestPairingCode(phoneNumber);
-                    const formattedCode = code.slice(0, 4) + '-' + code.slice(4, 8);
-                    sessionData.get(userId).code = formattedCode;
-                    sessionData.get(userId).status = 'code_ready';
-                    console.log(`[${userId}] Pairing code generated: ${formattedCode}`);
-                } else {
-                     throw new Error("Socket not open, can't request pairing code.");
-                }
-            } catch (error) {
-                 console.error(`[${userId}] Failed to request pairing code:`, error);
-                 sessionData.get(userId).status = 'error';
-            }
-        }, 4000); // 4-second delay
-    }
-
-    // Listen for all connection events
-    sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
-        const session = sessionData.get(userId);
-        if (!session) return; // If session was cleared, do nothing
-
-        if (qr && !isPairingCode) {
-            try {
-                const qrCodeUrl = await QRCode.toDataURL(qr);
-                session.qr = qrCodeUrl;
-                session.status = 'qr_ready';
-                console.log(`[${userId}] QR code is ready.`);
-            } catch (err) {
-                console.error(`[${userId}] Failed to generate QR code:`, err);
-                session.status = 'error';
-            }
-        }
-
+    sock.ev.on('creds.update', saveState);
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect } = update;
         if (connection === 'open') {
-            session.status = 'connected';
-            session.qr = null; // Clear QR/code data on successful connection
-            session.code = null;
-            console.log(`[${userId}] Connection opened successfully.`);
+            activeSockets.set(sessionCode, sock);
         } else if (connection === 'close') {
-            const reason = lastDisconnect?.error?.output?.statusCode;
-            session.status = 'disconnected';
-            console.log(`[${userId}] Connection closed. Reason: ${DisconnectReason[reason]}`);
-
-            if (reason === DisconnectReason.loggedOut) {
-                console.log(`[${userId}] User logged out. Clearing auth files.`);
-                fs.rmSync(authDir, { recursive: true, force: true });
-                sessionData.delete(userId); // Completely remove session on logout
+            activeSockets.delete(sessionCode);
+            if (lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut) {
+                if (fs.existsSync(authFile)) fs.unlinkSync(authFile);
             }
         }
     });
 
-    sock.ev.on('creds.update', saveCreds);
+    activeSockets.set(sessionCode, sock);
+    return { sock };
 }
 
 // --- API Endpoints ---
 
-app.post('/start-qr', (req, res) => {
-    const { userId } = req.body;
-    if (!userId) return res.status(400).json({ error: 'User ID is required.' });
-    console.log(`[${userId}] Starting QR connection process.`);
-    initializeWhatsAppConnection(userId, false);
-    res.status(200).json({ message: 'QR connection process started.' });
-});
+app.post('/get-session-status', async (req, res) => {
+    const { sessionCode } = req.body;
+    if (!sessionCode) return res.status(400).json({ error: 'Session code required.' });
 
-app.post('/start-pairing', (req, res) => {
-    const { userId, phoneNumber } = req.body;
-    if (!userId || !phoneNumber) return res.status(400).json({ error: 'User ID and phone number are required.' });
-    console.log(`[${userId}] Starting pairing code process for ${phoneNumber}.`);
-    initializeWhatsAppConnection(userId, true, phoneNumber);
-    res.status(200).json({ message: 'Pairing code process started.' });
-});
-
-app.get('/check-status/:userId', (req, res) => {
-    const { userId } = req.params;
-    const session = sessionData.get(userId);
-
-    if (!session) {
-        return res.status(200).json({ status: 'not_found', qr: null, code: null });
+    const authFile = `sessions/auth_${sessionCode}.json`;
+    if (fs.existsSync(authFile)) {
+        await initializeWhatsAppConnection(sessionCode);
+        return res.status(200).json({ status: 'connected' });
     }
-    
-    const response = { status: session.status, qr: session.qr, code: session.code };
-    if (session.qr) session.qr = null; // Send QR only once to prevent re-use
-    if (session.code) session.code = null; // Send code only once
 
-    res.status(200).json(response);
+    const { sock } = await initializeWhatsAppConnection(sessionCode);
+    sock.ev.once('connection.update', async ({ qr }) => {
+        if (qr) {
+            const qrCodeUrl = await QRCode.toDataURL(qr);
+            res.status(200).json({ status: 'qr_needed', qrCode: qrCodeUrl });
+        }
+    });
 });
 
-app.post('/send-message', async (req, res) => {
-    const { userId, phoneNumber, message } = req.body;
-    const session = sessionData.get(userId);
-
-    if (!session || session.status !== 'connected' || !session.sock) {
-        return res.status(400).json({ error: 'WhatsApp not connected for this user.' });
-    }
-    
-    let formattedNumber = phoneNumber.replace(/\D/g, '');
-    if (formattedNumber.length === 10) formattedNumber = '91' + formattedNumber;
-    const jid = `${formattedNumber}@s.whatsapp.net`;
-
+// --- AI Endpoints ---
+app.post('/generate-campaign-message', async (req, res) => {
+    const { goal } = req.body;
+    if (!goal) return res.status(400).json({ error: 'Goal is required.' });
     try {
-        await session.sock.sendMessage(jid, { text: message });
-        res.status(200).json({ success: true, message: 'Message sent successfully' });
+        const systemPrompt = "You are a professional marketing copywriter. Based on the user's goal, write a short, engaging, and friendly WhatsApp message. Include the placeholder '{name}' to personalize the message. Provide only the message text as a single string.";
+        const result = await model.generateContent({
+            contents: [{ parts: [{ text: `Campaign Goal: ${goal}` }] }],
+            systemInstruction: { parts: [{ text: systemPrompt }] }
+        });
+        const message = result.response.text();
+        res.status(200).json({ message });
     } catch (error) {
-        console.error(`[${userId}] Error sending message:`, error);
-        res.status(500).json({ error: 'Failed to send message.' });
+        res.status(500).json({ error: 'Failed to generate message.' });
     }
 });
 
-app.listen(port, () => {
-    console.log(`WhatsApp Dual-Method server listening on port ${port}`);
+// --- Campaign Endpoint ---
+app.post('/start-campaign', (req, res) => {
+    const { sessionCode, contacts, message } = req.body;
+    const sock = activeSockets.get(sessionCode);
+
+    if (!sock) return res.status(400).json({ error: 'Session not connected.' });
+    if (!contacts || contacts.length === 0) return res.status(400).json({ error: 'Contacts list is empty.' });
+    if (!message) return res.status(400).json({ error: 'Message is empty.' });
+
+    res.status(200).json({ success: true, message: `Campaign started for ${contacts.length} contacts.` });
+
+    // Send messages asynchronously with a safe delay
+    let count = 0;
+    const interval = setInterval(async () => {
+        if (count >= contacts.length) {
+            clearInterval(interval);
+            console.log(`[${sessionCode}] Campaign finished.`);
+            return;
+        }
+
+        const contact = contacts[count];
+        const jid = contact.phone.replace(/\D/g, '') + '@s.whatsapp.net';
+        const personalizedMessage = message.replace(/{name}/g, contact.name || '');
+
+        try {
+            await sock.sendMessage(jid, { text: personalizedMessage });
+            console.log(`[${sessionCode}] Message sent to ${contact.name} (${contact.phone})`);
+        } catch (error) {
+            console.error(`[${sessionCode}] Failed to send to ${contact.name}: ${error.message}`);
+        }
+        
+        count++;
+    }, 8000); // 8-second delay between messages for safety
 });
+
+
+app.listen(port, () => console.log(`WhatsApp Campaign Server listening on port ${port}`));
