@@ -1,14 +1,11 @@
 import express from 'express';
 import cors from 'cors';
-// --- THE FIX IS HERE ---
-// We now import the default export from the library correctly.
 import baileys, { DisconnectReason, useMultiFileAuthState } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import fs from 'fs';
 import QRCode from 'qrcode';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// The main function is now accessed via the 'baileys' default export
 const makeWASocket = baileys.default;
 
 // --- Server and AI Setup ---
@@ -34,7 +31,7 @@ async function initializeWhatsAppConnection(sessionCode) {
         logger: pino({ level: 'silent' }),
         auth: state,
         printQRInTerminal: true,
-        browser: ["Chrome (Linux)", "CampaignTool", "2.1"],
+        browser: ["Chrome (Linux)", "CampaignTool", "2.2"], // Version bump
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -71,7 +68,11 @@ app.post('/get-session-status', async (req, res) => {
     }
 
     const { sock } = await initializeWhatsAppConnection(sessionCode);
-    sock.ev.once('connection.update', async ({ qr }) => {
+
+    // --- THE FIX IS HERE ---
+    // We replace `.once` with `.on` and manually remove the listener after use.
+    const qrListener = async (update) => {
+        const { qr } = update;
         if (qr) {
             try {
                 const qrCodeUrl = await QRCode.toDataURL(qr);
@@ -79,8 +80,11 @@ app.post('/get-session-status', async (req, res) => {
             } catch {
                 res.status(500).json({ error: 'Failed to generate QR code.' });
             }
+            // Stop listening for this event to avoid sending multiple responses
+            sock.ev.off('connection.update', qrListener);
         }
-    });
+    };
+    sock.ev.on('connection.update', qrListener);
 });
 
 app.post('/generate-campaign-message', async (req, res) => {
