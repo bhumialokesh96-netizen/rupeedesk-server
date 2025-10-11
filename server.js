@@ -6,8 +6,8 @@ import fs from 'fs';
 import admin from 'firebase-admin';
 
 // --- Firebase Admin Setup ---
-// Make sure you have the serviceAccountKey.json in the same directory
-import serviceAccount from './serviceAccountKey.json' assert { type: 'json' };
+// Read and parse the service account key JSON file for compatibility.
+const serviceAccount = JSON.parse(fs.readFileSync('./serviceAccountKey.json'));
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
@@ -173,4 +173,5 @@ app.get('/check-status/:userId', (req, res) => {
 app.listen(port, () => {
     console.log(`WhatsApp backend server listening on port ${port}`);
 });
+
 
