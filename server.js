@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
-// CORRECTED IMPORT STATEMENT
-import { default as makeWASocket, DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, WAMessageStubType } from '@whiskeysockets/baileys';
+// FINAL FIX: Using a more robust import method for the Baileys library
+import baileys, { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, WAMessageStubType } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import fs from 'fs';
 import { Boom } from '@hapi/boom';
@@ -41,12 +41,12 @@ app.use(express.json());
 const activeConnections = new Map();
 const userConnectionStatus = new Map();
 
-// --- Message Listener Logic (abstracted to be added on connection) ---
+// --- Message Listener Logic ---
 function addMessageListener(sock, userId) {
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe || msg.messageStubType) {
-             return; // Ignore own messages, status updates etc.
+             return;
         }
         const sender = msg.key.remoteJid;
         const messageContent = msg.message.conversation || msg.message.extendedTextMessage?.text || '[Non-text message]';
@@ -83,7 +83,8 @@ async function initializeWhatsAppConnection(userId) {
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
     const { version } = await fetchLatestBaileysVersion();
     
-    const sock = makeWASocket({
+    // Using 'baileys' which is the imported default export
+    const sock = baileys({
         version,
         logger: pino({ level: 'silent' }),
         auth: state,
@@ -97,7 +98,7 @@ async function initializeWhatsAppConnection(userId) {
         if (connection === 'open') {
             console.log(`[${userId}] Reconnection successful.`);
             userConnectionStatus.set(userId, { status: 'connected' });
-            addMessageListener(sock, userId); // Add listener on successful reconnect
+            addMessageListener(sock, userId);
         } else if (connection === 'close') {
             const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
             console.log(`[${userId}] Connection closed. Reason: ${statusCode}`);
@@ -108,7 +109,7 @@ async function initializeWhatsAppConnection(userId) {
                 if (fs.existsSync(authDir)) { fs.rmSync(authDir, { recursive: true, force: true }); }
                 db.collection('users').doc(userId).update({ whatsAppBound: false });
             } else {
-                setTimeout(() => initializeWhatsAppConnection(userId), 10000); // Attempt to reconnect
+                setTimeout(() => initializeWhatsAppConnection(userId), 10000);
             }
         }
     });
@@ -148,7 +149,8 @@ app.post('/request-pairing-code', async (req, res) => {
         const { state, saveCreds } = await useMultiFileAuthState(authDir);
         const { version } = await fetchLatestBaileysVersion();
         
-        const sock = makeWASocket({
+        // Using 'baileys' which is the imported default export
+        const sock = baileys({
             version,
             logger: pino({ level: 'silent' }),
             auth: state,
@@ -187,15 +189,19 @@ app.post('/request-pairing-code', async (req, res) => {
 
 app.post('/request-qr-code/:userId', async (req, res) => {
     const { userId } = req.params;
-    if (activeConnections.has(userId)) return res.status(400).json({ error: 'Already connected.' });
-    
-    // This needs to be adapted similar to pairing code for full functionality, but leaving as is for now.
+    if (activeConnections.has(userId)) {
+        await activeConnections.get(userId).logout().catch(() => {});
+        activeConnections.delete(userId);
+    }
+
     const authDir = `auth_info_${userId}`;
     if (fs.existsSync(authDir)) { fs.rmSync(authDir, { recursive: true, force: true }); }
 
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
     const { version } = await fetchLatestBaileysVersion();
-    const sock = makeWASocket({ version, logger: pino({ level: 'silent' }), auth: state, browser: ['Rupeedesk', 'Desktop', '1.0.0'] });
+    
+    // Using 'baileys' which is the imported default export
+    const sock = baileys({ version, logger: pino({ level: 'silent' }), auth: state, browser: ['Rupeedesk', 'Desktop', '1.0.0'] });
     activeConnections.set(userId, sock);
 
     sock.ev.on('connection.update', async (update) => {
@@ -203,27 +209,25 @@ app.post('/request-qr-code/:userId', async (req, res) => {
         if(qr) {
             try {
                 const qrCodeUrl = await qrcode.toDataURL(qr);
-                userConnectionStatus.set(userId, { status: 'pending_qr', qrCode: qrCodeUrl });
+                if (!res.headersSent) {
+                    res.status(200).json({ qrCode: qrCodeUrl });
+                }
             } catch(err) {
                  console.error(`[${userId}] Error generating QR code`, err);
+                 if (!res.headersSent) {
+                    res.status(500).json({ error: 'Failed to generate QR code.' });
+                 }
             }
         }
         if(connection === 'open') {
             userConnectionStatus.set(userId, { status: 'connected' });
             addMessageListener(sock, userId);
         }
-        // ... handle close connection
+        if (connection === 'close') {
+             // Handle close connection if needed
+        }
     });
     sock.ev.on('creds.update', saveCreds);
-    
-    setTimeout(() => {
-        const statusInfo = userConnectionStatus.get(userId);
-        if (statusInfo && statusInfo.status === 'pending_qr') {
-            res.status(200).json({ qrCode: statusInfo.qrCode });
-        } else if(!res.headersSent) {
-            res.status(500).json({ error: 'Failed to generate QR code in time.' });
-        }
-    }, 8000);
 });
 
 app.get('/check-status/:userId', (req, res) => {
