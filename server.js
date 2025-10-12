@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
-// FINAL FIX: Using a more robust import method for the Baileys library
-import baileys, { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, WAMessageStubType } from '@whiskeysockets/baileys';
+// FINAL FIX: Importing from the official 'baileys' package
+import makeWASocket, { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, WAMessageStubType } from 'baileys';
 import pino from 'pino';
 import fs from 'fs';
 import { Boom } from '@hapi/boom';
@@ -83,8 +83,7 @@ async function initializeWhatsAppConnection(userId) {
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
     const { version } = await fetchLatestBaileysVersion();
     
-    // Using 'baileys' which is the imported default export
-    const sock = baileys({
+    const sock = makeWASocket({
         version,
         logger: pino({ level: 'silent' }),
         auth: state,
@@ -149,8 +148,7 @@ app.post('/request-pairing-code', async (req, res) => {
         const { state, saveCreds } = await useMultiFileAuthState(authDir);
         const { version } = await fetchLatestBaileysVersion();
         
-        // Using 'baileys' which is the imported default export
-        const sock = baileys({
+        const sock = makeWASocket({
             version,
             logger: pino({ level: 'silent' }),
             auth: state,
@@ -200,8 +198,7 @@ app.post('/request-qr-code/:userId', async (req, res) => {
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
     const { version } = await fetchLatestBaileysVersion();
     
-    // Using 'baileys' which is the imported default export
-    const sock = baileys({ version, logger: pino({ level: 'silent' }), auth: state, browser: ['Rupeedesk', 'Desktop', '1.0.0'] });
+    const sock = makeWASocket({ version, logger: pino({ level: 'silent' }), auth: state, browser: ['Rupeedesk', 'Desktop', '1.0.0'] });
     activeConnections.set(userId, sock);
 
     sock.ev.on('connection.update', async (update) => {
@@ -223,9 +220,7 @@ app.post('/request-qr-code/:userId', async (req, res) => {
             userConnectionStatus.set(userId, { status: 'connected' });
             addMessageListener(sock, userId);
         }
-        if (connection === 'close') {
-             // Handle close connection if needed
-        }
+        // ... handle close connection
     });
     sock.ev.on('creds.update', saveCreds);
 });
