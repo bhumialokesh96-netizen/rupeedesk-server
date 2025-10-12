@@ -1,6 +1,5 @@
 import express from 'express';
 import cors from 'cors';
-// FINAL FIX: Importing from the official 'baileys' package
 import makeWASocket, { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, WAMessageStubType } from 'baileys';
 import pino from 'pino';
 import fs from 'fs';
@@ -134,54 +133,64 @@ async function reconnectExistingSessions() {
 app.post('/request-pairing-code', async (req, res) => {
     const { phoneNumber, userId } = req.body;
     if (!phoneNumber || !userId) return res.status(400).json({ error: 'Phone number and user ID required.' });
+    
+    // ** THE FIX - PART 1: Forcefully clean up any old connection **
     if (activeConnections.has(userId)) {
-        await activeConnections.get(userId).logout().catch(() => {});
+        console.log(`[${userId}] Found an existing connection. Logging out and cleaning up.`);
+        await activeConnections.get(userId).logout().catch(err => console.error(`[${userId}] Error during old session logout:`, err));
         activeConnections.delete(userId);
     }
     
     try {
         const authDir = `auth_info_${userId}`;
         if (fs.existsSync(authDir)) {
+            console.log(`[${userId}] Deleting old auth directory for a clean start.`);
             fs.rmSync(authDir, { recursive: true, force: true });
         }
 
         const { state, saveCreds } = await useMultiFileAuthState(authDir);
         const { version } = await fetchLatestBaileysVersion();
         
+        // ** THE FIX - PART 2: Create a new stable socket **
         const sock = makeWASocket({
             version,
             logger: pino({ level: 'silent' }),
             auth: state,
             printQRInTerminal: false,
-            browser: ['Rupeedesk', 'Desktop', '1.0.0']
+            browser: ['Rupeedesk', 'Desktop', '1.0.0'] // Improves stability
         });
         activeConnections.set(userId, sock);
 
+        // ** THE FIX - PART 3: Attach all event listeners immediately to keep session alive **
         sock.ev.on('creds.update', saveCreds);
         sock.ev.on('connection.update', (update) => {
             const { connection, lastDisconnect } = update;
             if (connection === 'open') {
-                console.log(`[${userId}] Connection opened successfully via pairing code.`);
+                console.log(`[${userId}] Connection successfully opened via pairing code.`);
                 userConnectionStatus.set(userId, { status: 'connected' });
                 addMessageListener(sock, userId);
             } else if (connection === 'close') {
                 const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
-                console.log(`[${userId}] Connection closed during pairing. Reason: ${statusCode}`);
+                console.log(`[${userId}] Connection closed during pairing process. Reason: ${statusCode}`);
                 activeConnections.delete(userId);
                 userConnectionStatus.set(userId, { status: 'disconnected' });
             }
         });
         
+        // ** THE FIX - PART 4: Only request code once the socket is initialized and ready **
         if (!sock.authState.creds.registered) {
-            await new Promise(resolve => setTimeout(resolve, 1500)); 
+            await new Promise(resolve => setTimeout(resolve, 1500)); // Short delay for initialization
             const code = await sock.requestPairingCode(phoneNumber);
             const formattedCode = `${code.slice(0, 4)}-${code.slice(4, 8)}`;
-            console.log(`[${userId}] Pairing code generated: ${formattedCode}`);
+            console.log(`[${userId}] Pairing code generated successfully: ${formattedCode}`);
             res.status(200).json({ pairingCode: formattedCode });
+        } else {
+             // This case should not happen with the cleanup logic, but as a fallback.
+             res.status(409).json({ error: 'User is already registered. Please logout first.' });
         }
     } catch (error) {
-        console.error(`[${userId}] Pairing code process failed:`, error);
-        res.status(500).json({ error: 'Failed to request pairing code. Please try again.' });
+        console.error(`[${userId}] The entire pairing code process failed:`, error);
+        res.status(500).json({ error: 'Failed to request pairing code. Please try again later.' });
     }
 });
 
@@ -202,7 +211,7 @@ app.post('/request-qr-code/:userId', async (req, res) => {
     activeConnections.set(userId, sock);
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, qr, lastDisconnect } = update;
+        const { connection, qr } = update;
         if(qr) {
             try {
                 const qrCodeUrl = await qrcode.toDataURL(qr);
@@ -220,7 +229,6 @@ app.post('/request-qr-code/:userId', async (req, res) => {
             userConnectionStatus.set(userId, { status: 'connected' });
             addMessageListener(sock, userId);
         }
-        // ... handle close connection
     });
     sock.ev.on('creds.update', saveCreds);
 });
