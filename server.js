@@ -9,6 +9,7 @@ import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import https from 'https';
 
 // --- Read Service Account Key ---
 const __filename = fileURLToPath(import.meta.url);
@@ -131,37 +132,41 @@ async function reconnectExistingSessions() {
 
 // --- API Endpoints ---
 app.post('/request-pairing-code', async (req, res) => {
-    const { phoneNumber, userId } = req.body;
-    if (!phoneNumber || !userId) return res.status(400).json({ error: 'Phone number and user ID required.' });
+    let { phoneNumber, userId } = req.body;
+    if (!phoneNumber || !userId) return res.status(400).json({ error: 'Phone number and user ID are required.' });
     
-    // ** THE FIX - PART 1: Forcefully clean up any old connection **
+    // ** THE FIX - PART 1: Standardize phone number **
+    phoneNumber = phoneNumber.replace(/[^0-9]/g, ''); // Remove non-numeric characters
+    if (phoneNumber.length === 10) {
+        phoneNumber = '91' + phoneNumber; // Prepend country code if missing
+    }
+    console.log(`[${userId}] Standardized number to ${phoneNumber}`);
+
+
     if (activeConnections.has(userId)) {
-        console.log(`[${userId}] Found an existing connection. Logging out and cleaning up.`);
-        await activeConnections.get(userId).logout().catch(err => console.error(`[${userId}] Error during old session logout:`, err));
+        console.log(`[${userId}] Forcefully cleaning up old connection.`);
+        await activeConnections.get(userId).logout().catch(() => {});
         activeConnections.delete(userId);
     }
     
     try {
         const authDir = `auth_info_${userId}`;
         if (fs.existsSync(authDir)) {
-            console.log(`[${userId}] Deleting old auth directory for a clean start.`);
             fs.rmSync(authDir, { recursive: true, force: true });
         }
 
         const { state, saveCreds } = await useMultiFileAuthState(authDir);
         const { version } = await fetchLatestBaileysVersion();
         
-        // ** THE FIX - PART 2: Create a new stable socket **
         const sock = makeWASocket({
             version,
             logger: pino({ level: 'silent' }),
             auth: state,
             printQRInTerminal: false,
-            browser: ['Rupeedesk', 'Desktop', '1.0.0'] // Improves stability
+            browser: ['Rupeedesk', 'Desktop', '1.0.0']
         });
         activeConnections.set(userId, sock);
 
-        // ** THE FIX - PART 3: Attach all event listeners immediately to keep session alive **
         sock.ev.on('creds.update', saveCreds);
         sock.ev.on('connection.update', (update) => {
             const { connection, lastDisconnect } = update;
@@ -177,91 +182,51 @@ app.post('/request-pairing-code', async (req, res) => {
             }
         });
         
-        // ** THE FIX - PART 4: Only request code once the socket is initialized and ready **
         if (!sock.authState.creds.registered) {
-            await new Promise(resolve => setTimeout(resolve, 1500)); // Short delay for initialization
+            await new Promise(resolve => setTimeout(resolve, 1500));
             const code = await sock.requestPairingCode(phoneNumber);
             const formattedCode = `${code.slice(0, 4)}-${code.slice(4, 8)}`;
-            console.log(`[${userId}] Pairing code generated successfully: ${formattedCode}`);
+            console.log(`[${userId}] Pairing code generated: ${formattedCode}`);
             res.status(200).json({ pairingCode: formattedCode });
         } else {
-             // This case should not happen with the cleanup logic, but as a fallback.
-             res.status(409).json({ error: 'User is already registered. Please logout first.' });
+             res.status(409).json({ error: 'User is already registered.' });
         }
     } catch (error) {
-        console.error(`[${userId}] The entire pairing code process failed:`, error);
-        res.status(500).json({ error: 'Failed to request pairing code. Please try again later.' });
+        console.error(`[${userId}] Pairing code process failed:`, error);
+        res.status(500).json({ error: 'Failed to request pairing code. Please try again.' });
     }
 });
 
-app.post('/request-qr-code/:userId', async (req, res) => {
-    const { userId } = req.params;
-    if (activeConnections.has(userId)) {
-        await activeConnections.get(userId).logout().catch(() => {});
-        activeConnections.delete(userId);
-    }
 
-    const authDir = `auth_info_${userId}`;
-    if (fs.existsSync(authDir)) { fs.rmSync(authDir, { recursive: true, force: true }); }
-
-    const { state, saveCreds } = await useMultiFileAuthState(authDir);
-    const { version } = await fetchLatestBaileysVersion();
-    
-    const sock = makeWASocket({ version, logger: pino({ level: 'silent' }), auth: state, browser: ['Rupeedesk', 'Desktop', '1.0.0'] });
-    activeConnections.set(userId, sock);
-
-    sock.ev.on('connection.update', async (update) => {
-        const { connection, qr } = update;
-        if(qr) {
-            try {
-                const qrCodeUrl = await qrcode.toDataURL(qr);
-                if (!res.headersSent) {
-                    res.status(200).json({ qrCode: qrCodeUrl });
-                }
-            } catch(err) {
-                 console.error(`[${userId}] Error generating QR code`, err);
-                 if (!res.headersSent) {
-                    res.status(500).json({ error: 'Failed to generate QR code.' });
-                 }
-            }
-        }
-        if(connection === 'open') {
-            userConnectionStatus.set(userId, { status: 'connected' });
-            addMessageListener(sock, userId);
-        }
-    });
-    sock.ev.on('creds.update', saveCreds);
-});
-
+// --- Other Endpoints ---
 app.get('/check-status/:userId', (req, res) => {
     const { userId } = req.params;
     const statusInfo = userConnectionStatus.get(userId) || { status: 'not_found' };
     res.status(200).json(statusInfo);
 });
 
-app.post('/send-message', async (req, res) => {
-    const { userId, recipient, message } = req.body;
-    if (!userId || !recipient || !message) {
-        return res.status(400).json({ error: 'Missing required fields: userId, recipient, message.' });
-    }
-    const sock = activeConnections.get(userId);
-    if (!sock) {
-        return res.status(404).json({ error: 'User is not connected. Please link the device first.' });
-    }
-    try {
-        const jid = `${recipient}@s.whatsapp.net`;
-        await sock.sendMessage(jid, { text: message });
-        res.status(200).json({ success: true, message: 'Message sent successfully.' });
-    } catch (error) {
-        console.error(`[${userId}] Failed to send message:`, error);
-        res.status(500).json({ error: 'Failed to send message.' });
-    }
-});
 
-// --- Start the Server ---
-app.listen(port, () => {
+// --- Server and Keep-Alive Logic ---
+const server = app.listen(port, () => {
     console.log(`WhatsApp backend server listening on port ${port}`);
     reconnectExistingSessions();
+
+    // ** THE FIX - PART 2: Keep-alive mechanism for Render free tier **
+    const RENDER_URL = `https://${process.env.RENDER_EXTERNAL_HOSTNAME}`;
+    if (process.env.RENDER_EXTERNAL_HOSTNAME) {
+        setInterval(() => {
+            console.log("Keep-alive ping sent to prevent server from sleeping.");
+            https.get(RENDER_URL, (res) => {
+                if (res.statusCode === 200) {
+                    console.log("Keep-alive ping successful.");
+                } else {
+                    console.error(`Keep-alive ping failed with status code: ${res.statusCode}`);
+                }
+            }).on('error', (err) => {
+                console.error("Error during keep-alive ping:", err.message);
+            });
+        }, 1000 * 60 * 4); // Ping every 4 minutes
+    }
 });
 
 
