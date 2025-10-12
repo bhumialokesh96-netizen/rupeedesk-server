@@ -139,6 +139,7 @@ async function initializeWhatsAppConnection(userId) {
     });
 
     sock.ev.on('creds.update', saveCreds);
+    return sock; // Return the socket instance
 }
 
 async function reconnectExistingSessions() {
@@ -176,17 +177,22 @@ app.post('/request-qr-code/:userId', async (req, res) => {
     }, 5000);
 });
 
+// CORRECTED PAIRING CODE ENDPOINT
 app.post('/request-pairing-code', async (req, res) => {
     const { phoneNumber, userId } = req.body;
     if (!phoneNumber || !userId) return res.status(400).json({ error: 'Phone number and user ID required.' });
     if (activeConnections.has(userId)) return res.status(400).json({ error: 'Already connected.' });
     
     try {
-        const sock = makeWASocket({ logger: pino({ level: 'silent' }) });
+        // 1. Initialize the connection properly first.
+        const sock = await initializeWhatsAppConnection(userId);
+        
+        // 2. Wait a moment for the socket to be ready.
+        await new Promise(resolve => setTimeout(resolve, 3000));
+
+        // 3. Request the pairing code using the initialized socket.
         const code = await sock.requestPairingCode(phoneNumber);
         const formattedCode = `${code.slice(0, 4)}-${code.slice(4, 8)}`;
-        
-        initializeWhatsAppConnection(userId).catch(err => console.error(`[${userId}] Init error:`, err));
         
         res.status(200).json({ pairingCode: formattedCode });
     } catch (error) {
@@ -201,28 +207,20 @@ app.get('/check-status/:userId', (req, res) => {
     res.status(200).json(statusInfo);
 });
 
-// --- NEW ENDPOINT TO SEND MESSAGES ---
 app.post('/send-message', async (req, res) => {
     const { userId, recipient, message } = req.body;
-
-    // 1. Validate Input
     if (!userId || !recipient || !message) {
         return res.status(400).json({ error: 'Missing required fields: userId, recipient, message.' });
     }
 
-    // 2. Find the Active Connection
     const sock = activeConnections.get(userId);
     if (!sock) {
         return res.status(404).json({ error: 'User is not connected. Please link the device first.' });
     }
 
     try {
-        // 3. Format the recipient's phone number into a JID (WhatsApp ID)
         const jid = `${recipient}@s.whatsapp.net`;
-        
-        // 4. Send the message
         await sock.sendMessage(jid, { text: message });
-        
         console.log(`[${userId}] Sent message to ${recipient}: "${message}"`);
         res.status(200).json({ success: true, message: 'Message sent successfully.' });
     } catch (error) {
@@ -230,7 +228,6 @@ app.post('/send-message', async (req, res) => {
         res.status(500).json({ error: 'Failed to send message.' });
     }
 });
-
 
 // --- Start the Server ---
 app.listen(port, () => {
