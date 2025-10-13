@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 // This import now correctly points to the 'baileys-mod' package
-import makeWASocket, { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion } from 'baileys';
+import makeWASocket, { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import fs from 'fs';
 import { Boom } from '@hapi/boom';
