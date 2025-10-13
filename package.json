@@ -1,16 +1,22 @@
 {
   "name": "rupeedesk-server",
   "version": "1.0.0",
-  "description": "A server using Baileys library for WhatsApp automation",
+  "description": "WhatsApp Backend Server",
   "main": "server.js",
+  "type": "module",
   "scripts": {
     "start": "node server.js"
   },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
   "dependencies": {
-    "baileys": "npm:baileys-mod",
-    "qrcode": "^1.5.0",
-    "firebase-admin": "^10.3.0"
-  },
-  "author": "Your Name",
-  "license": "ISC"
+    "baileys": "github:nstar-y/bail",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "firebase-admin": "^12.1.0",
+    "pino": "^9.1.0",
+    "qrcode": "^1.5.3",
+    "sharp": "^0.33.4"
+  }
 }
