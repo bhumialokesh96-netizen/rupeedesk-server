@@ -131,14 +131,20 @@ async function reconnectExistingSessions() {
 }
 
 // --- API Endpoints ---
+
+// --- ADD THIS ROOT ENDPOINT ---
+app.get('/', (req, res) => {
+    res.status(200).json({ status: 'online', message: 'Rupeedesk server is running.' });
+});
+// -----------------------------
+
 app.post('/request-pairing-code', async (req, res) => {
     let { phoneNumber, userId } = req.body;
     if (!phoneNumber || !userId) return res.status(400).json({ error: 'Phone number and user ID are required.' });
 
-    // ** THE FIX - PART 1: Standardize phone number **
-    phoneNumber = phoneNumber.replace(/[^0-9]/g, ''); // Remove non-numeric characters
+    phoneNumber = phoneNumber.replace(/[^0-9]/g, '');
     if (phoneNumber.length === 10) {
-        phoneNumber = '91' + phoneNumber; // Prepend country code if missing
+        phoneNumber = '91' + phoneNumber;
     }
     console.log(`[${userId}] Standardized number to ${phoneNumber}`);
 
@@ -196,7 +202,6 @@ app.post('/request-pairing-code', async (req, res) => {
     }
 });
 
-// --- Other Endpoints ---
 app.get('/check-status/:userId', (req, res) => {
     const { userId } = req.params;
     const statusInfo = userConnectionStatus.get(userId) || { status: 'not_found' };
@@ -208,7 +213,6 @@ const server = app.listen(port, () => {
     console.log(`WhatsApp backend server listening on port ${port}`);
     reconnectExistingSessions();
 
-    // ** THE FIX - PART 2: Keep-alive mechanism for Render free tier **
     const RENDER_URL = `https://${process.env.RENDER_EXTERNAL_HOSTNAME}`;
     if (process.env.RENDER_EXTERNAL_HOSTNAME) {
         setInterval(() => {
