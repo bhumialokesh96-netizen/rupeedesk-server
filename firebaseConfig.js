@@ -3,7 +3,7 @@ const serviceAccount = require('./serviceAccountKey.json'); // Update the path t
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  databaseURL: 'https://your-database-name.firebaseio.com' // Replace with your database URL
+  databaseURL: 'https://rupeedesk-135aa.firebaseio.com' // Replace with your database URL
 });
 
 const db = admin.database();
