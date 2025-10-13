@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-// Use the new baileys-mod library
+// This import now correctly points to the 'baileys-mod' package
 import makeWASocket, { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion } from 'baileys';
 import pino from 'pino';
 import fs from 'fs';
@@ -83,6 +83,7 @@ async function initializeWhatsAppConnection(userId) {
                 if (fs.existsSync(authDir)) fs.rmSync(authDir, { recursive: true, force: true });
                 await db.collection('users').doc(userId).update({ whatsAppNumber: null });
             } else {
+                // Attempt to reconnect for other reasons
                 setTimeout(() => initializeWhatsAppConnection(userId), 10000);
             }
         }
@@ -127,13 +128,11 @@ app.post('/request-pairing-code', async (req, res) => {
     try {
         await new Promise(resolve => setTimeout(resolve, 1500));
         
-        // --- MODIFICATION FOR CUSTOM CODE ---
-        // Define your custom 8-digit code here
+        // Define your custom 8-digit code
         const customPairingCode = "77777777";
         // Pass the custom code as the second argument
         const code = await sock.requestPairingCode(phoneNumber, customPairingCode);
         
-        // The 'code' returned here will be your custom code, which is then formatted.
         const formattedCode = `${code.slice(0, 4)}-${code.slice(4, 8)}`;
         
         res.status(200).json({ pairingCode: formattedCode });
