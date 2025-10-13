@@ -79,10 +79,10 @@ function addMessageListener(sock, userId) {
 async function initializeWhatsAppConnection(userId) {
     console.log(`[${userId}] Reconnecting existing WhatsApp session...`);
     const authDir = `auth_info_${userId}`;
-    
+
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
     const { version } = await fetchLatestBaileysVersion();
-    
+
     const sock = makeWASocket({
         version,
         logger: pino({ level: 'silent' }),
@@ -134,7 +134,7 @@ async function reconnectExistingSessions() {
 app.post('/request-pairing-code', async (req, res) => {
     let { phoneNumber, userId } = req.body;
     if (!phoneNumber || !userId) return res.status(400).json({ error: 'Phone number and user ID are required.' });
-    
+
     // ** THE FIX - PART 1: Standardize phone number **
     phoneNumber = phoneNumber.replace(/[^0-9]/g, ''); // Remove non-numeric characters
     if (phoneNumber.length === 10) {
@@ -142,13 +142,12 @@ app.post('/request-pairing-code', async (req, res) => {
     }
     console.log(`[${userId}] Standardized number to ${phoneNumber}`);
 
-
     if (activeConnections.has(userId)) {
         console.log(`[${userId}] Forcefully cleaning up old connection.`);
         await activeConnections.get(userId).logout().catch(() => {});
         activeConnections.delete(userId);
     }
-    
+
     try {
         const authDir = `auth_info_${userId}`;
         if (fs.existsSync(authDir)) {
@@ -157,7 +156,7 @@ app.post('/request-pairing-code', async (req, res) => {
 
         const { state, saveCreds } = await useMultiFileAuthState(authDir);
         const { version } = await fetchLatestBaileysVersion();
-        
+
         const sock = makeWASocket({
             version,
             logger: pino({ level: 'silent' }),
@@ -181,7 +180,7 @@ app.post('/request-pairing-code', async (req, res) => {
                 userConnectionStatus.set(userId, { status: 'disconnected' });
             }
         });
-        
+
         if (!sock.authState.creds.registered) {
             await new Promise(resolve => setTimeout(resolve, 1500));
             const code = await sock.requestPairingCode(phoneNumber);
@@ -197,14 +196,12 @@ app.post('/request-pairing-code', async (req, res) => {
     }
 });
 
-
 // --- Other Endpoints ---
 app.get('/check-status/:userId', (req, res) => {
     const { userId } = req.params;
     const statusInfo = userConnectionStatus.get(userId) || { status: 'not_found' };
     res.status(200).json(statusInfo);
 });
-
 
 // --- Server and Keep-Alive Logic ---
 const server = app.listen(port, () => {
@@ -228,5 +225,3 @@ const server = app.listen(port, () => {
         }, 1000 * 60 * 4); // Ping every 4 minutes
     }
 });
-
-
