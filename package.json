@@ -5,7 +5,8 @@
   "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "postinstall": "cd node_modules/baileys && npm install && npm run build:tsc"
   },
   "keywords": [],
   "author": "",
