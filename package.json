@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "postinstall": "cd node_modules/baileys && npm install && npm run build:tsc"
+    "postinstall": "cd node_modules/baileys && npm install --legacy-peer-deps && npm run build:tsc"
   },
   "keywords": [],
   "author": "",
