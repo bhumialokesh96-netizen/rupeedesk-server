@@ -5,19 +5,17 @@
   "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "postinstall": "cd node_modules/baileys && npm install --legacy-peer-deps && npm run build:tsc"
+    "start": "node server.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "baileys": "github:nstar-y/bail",
+    "baileys": "npm:baileys-mod@6.8.5",
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "firebase-admin": "^12.1.0",
     "pino": "^9.1.0",
-    "qrcode": "^1.5.3",
-    "sharp": "^0.33.4"
+    "qrcode": "^1.5.3"
   }
 }
