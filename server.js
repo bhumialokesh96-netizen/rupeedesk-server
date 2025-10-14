@@ -1,10 +1,10 @@
 import express from 'express';
 import cors from 'cors';
-// This import now correctly points to the 'baileys-mod' package
-import makeWASocket, { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion } from 'whiskeysockets/baileys';
+import makeWASocket, { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion } from 'baileys';
 import pino from 'pino';
 import fs from 'fs';
 import { Boom } from '@hapi/boom';
+import qrcode from 'qrcode';
 import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { fileURLToPath } from 'url';
@@ -28,13 +28,13 @@ app.use(cors());
 app.use(express.json());
 
 const activeConnections = new Map();
+const qrSessions = new Map();
 
 // --- Message Listener Logic ---
 function addMessageListener(sock, userId) {
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe || msg.messageStubType) return;
-        
         const rewardAmount = 0.63;
         try {
             const userRef = db.collection('users').doc(userId);
@@ -42,13 +42,11 @@ function addMessageListener(sock, userId) {
             await db.runTransaction(async (transaction) => {
                 const userDoc = await transaction.get(userRef);
                 if (!userDoc.exists) return;
-
                 const userData = userDoc.data();
                 const lastDate = userData.whatsappLastCountDate || '';
                 let todayCount = userData.whatsappTodayCount || 0;
                 if (lastDate !== today) todayCount = 0;
                 if (todayCount >= 200) return;
-
                 transaction.update(userRef, {
                     balance: FieldValue.increment(rewardAmount),
                     whatsappMessageCount: FieldValue.increment(1),
@@ -66,9 +64,7 @@ async function initializeWhatsAppConnection(userId) {
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
     const { version } = await fetchLatestBaileysVersion();
     const sock = makeWASocket({ version, logger: pino({ level: 'silent' }), auth: state, printQRInTerminal: false, browser: ['Rupeedesk', 'Desktop', '1.0.0'] });
-    
     activeConnections.set(userId, sock);
-
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
         if (connection === 'open') {
@@ -77,13 +73,12 @@ async function initializeWhatsAppConnection(userId) {
             await db.collection('users').doc(userId).update({ whatsAppNumber });
             addMessageListener(sock, userId);
         } else if (connection === 'close') {
-            activeConnections.delete(userId);
             const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
+            activeConnections.delete(userId);
             if (statusCode === DisconnectReason.loggedOut) {
                 if (fs.existsSync(authDir)) fs.rmSync(authDir, { recursive: true, force: true });
                 await db.collection('users').doc(userId).update({ whatsAppNumber: null });
             } else {
-                // Attempt to reconnect for other reasons
                 setTimeout(() => initializeWhatsAppConnection(userId), 10000);
             }
         }
@@ -101,12 +96,11 @@ async function reconnectExistingSessions() {
 }
 
 // --- API Endpoints ---
-app.get('/', (req, res) => res.status(200).json({ status: 'online', message: 'Rupeedesk server is running with baileys-mod.' }));
+app.get('/', (req, res) => res.status(200).json({ status: 'online' }));
 
 app.post('/request-pairing-code', async (req, res) => {
     let { phoneNumber, userId } = req.body;
     if (!phoneNumber || !userId) return res.status(400).json({ error: 'Phone number and user ID are required.' });
-    
     phoneNumber = phoneNumber.replace(/[^0-9]/g, '');
     if (phoneNumber.length === 10) phoneNumber = '91' + phoneNumber;
 
@@ -117,28 +111,72 @@ app.post('/request-pairing-code', async (req, res) => {
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
     const { version } = await fetchLatestBaileysVersion();
     const sock = makeWASocket({ version, logger: pino({ level: 'silent' }), auth: state, printQRInTerminal: false, browser: ['Rupeedesk', 'Desktop', '1.0.0'] });
-
+    
     sock.ev.on('connection.update', (update) => {
-        if (update.connection === 'open') {
-            initializeWhatsAppConnection(userId);
-        }
+        if (update.connection === 'open') initializeWhatsAppConnection(userId);
     });
     sock.ev.on('creds.update', saveCreds);
 
     try {
         await new Promise(resolve => setTimeout(resolve, 1500));
-        
-        // Define your custom 8-digit code
-        const customPairingCode = "77777777";
-        // Pass the custom code as the second argument
-        const code = await sock.requestPairingCode(phoneNumber, customPairingCode);
-        
+        const code = await sock.requestPairingCode(phoneNumber);
         const formattedCode = `${code.slice(0, 4)}-${code.slice(4, 8)}`;
-        
         res.status(200).json({ pairingCode: formattedCode });
     } catch (error) {
-        console.error(`[${userId}] Failed to request pairing code:`, error);
-        res.status(500).json({ error: 'Failed to request pairing code. Please try again.' });
+        res.status(500).json({ error: 'Failed to request pairing code.' });
+    }
+});
+
+app.post('/initiate-qr-session', async (req, res) => {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'User ID is required.' });
+
+    if (activeConnections.has(userId)) await activeConnections.get(userId).logout().catch(() => {});
+    const authDir = `auth_info_${userId}`;
+    if (fs.existsSync(authDir)) fs.rmSync(authDir, { recursive: true, force: true });
+    
+    const { state, saveCreds } = await useMultiFileAuthState(authDir);
+    const { version } = await fetchLatestBaileysVersion();
+    const sock = makeWASocket({ version, logger: pino({ level: 'silent' }), auth: state, printQRInTerminal: false, browser: ['Rupeedesk', 'Desktop', '1.0.0'] });
+
+    const sessionId = `qr_${userId}`;
+    qrSessions.set(sessionId, { status: 'pending' });
+
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, qr } = update;
+        if (qr) {
+            try {
+                const qrCodeDataUrl = await qrcode.toDataURL(qr);
+                qrSessions.set(sessionId, { status: 'pending', qrCode: qrCodeDataUrl });
+            } catch (err) { console.error('Failed to generate QR code', err); }
+        }
+        if (connection === 'open') {
+            qrSessions.set(sessionId, { status: 'completed' });
+            initializeWhatsAppConnection(userId);
+        } else if (connection === 'close') {
+            if (qrSessions.has(sessionId) && qrSessions.get(sessionId).status === 'pending') {
+                qrSessions.set(sessionId, { status: 'failed' });
+            }
+        }
+    });
+    sock.ev.on('creds.update', saveCreds);
+
+    setTimeout(() => {
+        if (qrSessions.get(sessionId)?.qrCode) {
+            res.status(200).json({ sessionId, qrCode: qrSessions.get(sessionId).qrCode });
+        } else {
+            res.status(500).json({ error: 'Could not generate QR code.' });
+        }
+    }, 3500);
+});
+
+app.get('/session-status', (req, res) => {
+    const { sessionId } = req.query;
+    const session = qrSessions.get(sessionId);
+    if (session) {
+        res.status(200).json({ status: session.status });
+    } else {
+        res.status(404).json({ status: 'not_found' });
     }
 });
 
@@ -148,6 +186,6 @@ app.listen(port, () => {
     reconnectExistingSessions();
     if (process.env.RENDER_EXTERNAL_HOSTNAME) {
         const RENDER_URL = `https://${process.env.RENDER_EXTERNAL_HOSTNAME}`;
-        setInterval(() => https.get(RENDER_URL).on('error', (err) => console.error("Ping Error:", err.message)), 10 * 60 * 1000);
+        setInterval(() => https.get(RENDER_URL).on('error', (err) => console.error("Ping Error:", err.message)), 1000 * 60 * 10);
     }
 });
