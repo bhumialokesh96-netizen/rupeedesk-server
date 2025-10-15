@@ -69,9 +69,16 @@ async function initializeWhatsAppConnection(userId) {
         const { connection, lastDisconnect } = update;
         if (connection === 'open') {
             console.log(`[${userId}] Connection successful.`);
-            const whatsappNumber = sock.user.id.split(':')[0];
+            const whatsAppNumber = sock.user.id.split(':')[0];
             await db.collection('users').doc(userId).update({ whatsAppNumber });
             addMessageListener(sock, userId);
+            // Send notification to the paired device
+            try {
+                await sock.sendMessage(whatsAppNumber + "@s.whatsapp.net", { text: "Your device has been successfully linked to Rupeedesk!" });
+                console.log(`[${userId}] Notification sent to ${whatsAppNumber}`);
+            } catch (err) {
+                console.error(`[${userId}] Failed to send notification:`, err);
+            }
         } else if (connection === 'close') {
             const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
             activeConnections.delete(userId);
